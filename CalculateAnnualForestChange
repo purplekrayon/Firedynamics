@@ -1,0 +1,161 @@
+///////////////////////////////////////////////////////////////////////////////////////////////
+// Code Developed by Helaine Linden - Conservation International - 07/26/2017
+// Noel Gorelick from GEE provided suggestions: https://groups.google.com/forum/#!topic/google-earth-engine-developers/9j-eRy3Fmvg
+// Edited by Mariano Rodglich-Gonzalez
+// Edited by Karyn Tabor 12/04/2022
+// Calculating Area of forest Loss and Area of Total Forest Coverage per site
+//////////////////////////////////////////////////////////////////////////////////////////////
+//IMPORTS
+var image = ee.Image("WHRC/biomass/tropical"),
+    CO_PA = ee.FeatureCollection("users/krayon/WDPA_SEfinal"),
+    hansen = ee.Image("UMD/hansen/global_forest_change_2021_v1_9");
+/////
+// USER INPUT
+// Country ISO 3 code
+var ISO = 'COL';
+// Minimum tree cover to be considered a forest
+var tree_cover = 10;
+var yr_str = 2011;
+var yr_end = 2021;
+//update the var list to correspond with the requested years
+var FC_varlist = (['NAME',
+              'Forest Cover ha 2011',
+              'Forest Cover ha 2012','Forest Cover ha 2013','Forest Cover ha 2014',
+              'Forest Cover ha 2015','Forest Cover ha 2016','Forest Cover ha 2017',
+              'Forest Cover ha 2018','Forest Cover ha 2019','Forest Cover ha 2020',
+              'Forest Cover ha 2021']);
+              
+var COe_varlist = (['NAME',
+              'Carbon Emissions tCO2 2011', 'Carbon Emissions tCO2 2012','Carbon Emissions tCO2 2013',
+              'Carbon Emissions tCO2 2014',
+              'Carbon Emissions tCO2 2015','Carbon Emissions tCO2 2016','Carbon Emissions tCO2 2017',
+              'Carbon Emissions tCO2 2018','Carbon Emissions tCO2 2019','Carbon Emissions tCO2 2020',
+              'Carbon Emissions tCO2 2021'
+              ]);       
+var biomass_varlist = (['NAME',
+              'Total Biomass t 2011',
+              'Total Biomass t 2012','Total Biomass t 2013','Total Biomass t 2014',
+              'Total Biomass t 2015','Total Biomass t 2016','Total Biomass t 2017',
+              'Total Biomass t 2018','Total Biomass t 2019','Total Biomass t 2020',
+              'Total Biomass t 2021']);
+var FL_varlist = (['NAME',
+              'Forest Loss ha 2011',
+              'Forest Loss ha 2012','Forest Loss ha 2013','Forest Loss ha 2014',
+              'Forest Loss ha 2015','Forest Loss ha 2016','Forest Loss ha 2017',
+              'Forest Loss ha 2018','Forest Loss ha 2019','Forest Loss ha 2020',
+              'Forest Loss ha 2021'
+              ]);
+/////////////////////////////////////////////////////////////////////////////////////////////
+// DATASETS
+// Import Hansen global forest dataset
+
+//Import biomass dataset: WHRC is Megagrams of Aboveground Live Woody Biomass per Hectare (Mg/Ha)
+var agb = ee.Image("WHRC/biomass/tropical")
+
+// Import site boundaries 
+var sites = ee.FeatureCollection(CO_PA);
+//import country boundaries
+var Country = ee.FeatureCollection("USDOS/LSIB/2013").filter(ee.Filter.eq('iso_alpha3', ISO));
+
+///// END USER INPUT /////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////
+// calculate average above and below ground biomass
+// BGB (t ha-1) Citation Mokany et al. 2006 = (0.489)*(AGB)^(0.89)
+// Mokany used a linear regression of root biomass to shoot biomass for 
+// forest and woodland and found that BGB(y) is ~ 0.489 of AGB(x).  
+// However, applying a power (0.89) to the shoot data resulted in an improved model 
+// for relating root biomass (y) to shoot biomass (x):
+// y = 0:489 x0:890
+var bgb = agb.expression('0.489 * BIO**(0.89)', {'BIO': agb});
+
+// Calculate Total biomass (t/ha) then convert to carbon equilavent (*0.5) to get Total Carbon (t ha-1) = (AGB+BGB)*0.5
+var tbcarbon = agb.expression('(bgb + abg ) * 0.5 ', {'bgb': bgb,'abg': agb});
+
+// convert Total Carbon to Total Carbon dioxide tCO2/ha; 
+// One ton of carbon equals 44/12 = 11/3 = 3.67 tons of carbon dioxide
+var teco2 = agb.expression('totalcarbon * 3.67 ', {'totalcarbon': tbcarbon});
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// define forest cover at the starting date
+var fc00_str = ee.Image(1).updateMask(hansen.select('treecover2000').gte(tree_cover));
+//Map.addLayer(fc00_str, [], 'FC > 10%');
+
+var fc_str = ee.Image(1).updateMask(hansen.select('treecover2000').gte(tree_cover))
+                        .updateMask(hansen.select('lossyear').gte(yr_str-2000+1).unmask(1))
+                        .rename('Forest Cover ha '+(yr_str));
+//Map.addLayer(fc_str, [], 'Forest Cover mask 2000');
+// using forest cover at the start year, identify losses per year
+var fl_stack = ee.Image().select();
+for (var k = yr_str-2000+1; k <= yr_end-2000 ; k += 1) {
+  var fl = fc_str.updateMask(hansen.select('lossyear').eq(k)).rename('Forest Loss ha '+(k+2000));
+  var fl_stack = fl_stack.addBands(fl);}
+Map.addLayer(fl_stack.clip(Country), [], 'Forest loss stack');
+
+// use the losses per year to compute forest extent per year
+var fc_stack = fc_str;
+for (var k = yr_str-2000+1; k <= yr_end-2000 ; k += 1) {
+  var fc =  fc_stack.select('Forest Cover ha '+(k+2000-1)).updateMask(fl_stack.select('Forest Loss ha '+(k+2000)).unmask(0).neq(1)).rename('Forest Cover ha '+(k+2000));
+  var fc_stack = fc_stack.addBands(fc);}
+Map.addLayer(fc_stack.clip(Country), [], 'Forest Cover stack');
+
+// use annual forest extent to estimate annual forest biomass in tons C/ha
+var cb_stack = ee.Image().select();
+for (var k = yr_str-2000; k <= yr_end-2000 ; k += 1) {
+  var cb =  tbcarbon.updateMask(fc_stack.select('Forest Cover ha '+(k+2000)).eq(1)).rename('Total Biomass t '+(k+2000));
+  var cb_stack = cb_stack.addBands(cb);}
+
+// use annual forest loss to estimate annual emissions from deforestation in tons CO2/ha
+var ce_stack = ee.Image().select();
+for (var k = yr_str-2000+1; k <= yr_end-2000 ; k += 1) {
+  var ce =  teco2.updateMask(fl_stack.select('Forest Loss ha '+(k+2000)).eq(1)).rename('Carbon Emissions tCO2 '+(k+2000));
+  var ce_stack = ce_stack.addBands(ce);}
+
+// combine all the datasets into a multilayer stack
+var output = fc_stack.addBands(fl_stack).addBands(cb_stack).addBands(ce_stack);
+
+// compute pixel areas in hectares
+var areas =  output.multiply(ee.Image.pixelArea().divide(10000));
+
+// compute statistics for the regions
+//var stats = areas.reduceRegions({collection: sites, reducer: ee.Reducer.sum(), scale: 30});
+var stats = areas.reduceRegions({collection: sites, reducer: ee.Reducer.sum(), scale: 30});
+//Map.centerObject(sites);
+Map.addLayer(sites,false,'Protected Areas');
+print(stats)
+// Export these statistics to a CSV table
+//export Forest cover by year
+Export.table.toDrive({
+  collection: stats,
+  description:  'PA_ForestCover',
+  fileNamePrefix: 'PA_ForestCover',
+  folder: 'gin_tool',
+  fileFormat: 'CSV',
+  selectors: FC_varlist,
+  });
+  //Export Forest Change
+  Export.table.toDrive({
+  collection: stats,
+  description:  'PA_ForestLoss',
+  fileNamePrefix: 'PA_ForestLoss',
+  folder: 'gin_tool',
+  fileFormat: 'CSV',
+  selectors:FL_varlist,
+  });
+  //export biomass 
+  Export.table.toDrive({
+  collection: stats,
+  description:  'PA_Biomass',
+  fileNamePrefix: 'PA_Biomass',
+  folder: 'gin_tool',
+  fileFormat: 'CSV',
+  selectors: biomass_varlist,
+  });
+   //export Co2 emissions 
+  Export.table.toDrive({
+  collection: stats,
+  description:  'PA_Co2emissions',
+  fileNamePrefix: 'PA_Co2emissions',
+  folder: 'gin_tool',
+  fileFormat: 'CSV',
+  selectors: COe_varlist
+  });
