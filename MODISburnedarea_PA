@@ -1,0 +1,113 @@
+/////////////////////////////////////////
+////IMPORTS
+///Administrative units and protected areas
+var Col_Admin = ee.FeatureCollection("users/krayon/col_admbnda_adm1_mgn_20200416"),
+    CO_PA = ee.FeatureCollection("users/krayon/WDPA_SEfinal");
+
+ ///////////////////////////////////////////////////////
+ // Create burn frequency dataset
+// 1 - import and view 15 years of burned area data (MODIS 500m)
+// 2 - calculate frequency of burned areas
+// 3 - Plot burned area counts 
+// 4 - calculate annual frequency of burned areas 
+//Last edited by Karyn Tabor 12/04/2022
+//user defined parameters
+// Country ISO 3 code
+var iso_code = 'COL';
+//Admin poly of interest
+var Admin_unit = 'Amazonas'
+var Poly = ee.FeatureCollection(Col_Admin).filter(ee.Filter.eq('ADM1_ES', Admin_unit));
+//import country boundaries
+var country = ee.FeatureCollection("USDOS/LSIB/2013").filter(ee.Filter.eq('iso_alpha3', iso_code));
+//function to add a geometry attribute to Col_Admin table, called 'ha' in units of hectares
+var addArea = function(feature) {
+  return feature.set({ha: feature.geometry().area().multiply(0.0001)});
+};
+//Apply area function to feature collection
+var Col_Admin = Col_Admin.map(addArea);
+var CO_PA = CO_PA.map(addArea);
+
+//###########User Input############
+var startyear =2012;
+var endyear = 2022;
+var years = ee.List.sequence(startyear, endyear);
+
+//*********** 1 - import and view 15 years of burned area data
+//Import MODIS data
+var burnedArea = ee.ImageCollection("MODIS/061/MCD64A1")
+  .filterDate(startyear+'-01-01', endyear+'-12-31')
+  .select('BurnDate')
+  .filterBounds(country);
+ //print(burnedArea);
+//convert image collection to image stack with bands for everydate
+var burnedareastack = burnedArea.toBands();
+//add burned area to map.   
+var burnedAreaVis = {
+  min: 30.0,
+  max: 341.0,
+  palette: ['4e0400', '951003', 'c61503', 'ff1901'],
+};
+print(burnedareastack);
+
+
+//*********** 2 - calcualte frequency of burned areas over the entire time series
+var burnedAreaCount = burnedareastack.reduce(ee.Reducer.count())
+  .rename('BurnCount');
+//print(burnedAreaCount);
+
+// set visualization parameter. See https://en.wikipedia.org/wiki/Web_colors for reference  
+var burnedAreaCountVis = {
+  min: 1.0,
+  max: 10.0,
+  palette: ['FFFF00', 'FF0000', '	800000'],
+};
+Map.addLayer(burnedAreaCount.clip(country), burnedAreaCountVis, 'Burned Area Count');
+//Map.addLayer(country);
+
+
+//*********** 3 - Plot burned area counts  
+//Plot time series for a single AOI
+var chart = ui.Chart.image.series({
+  imageCollection: burnedArea,
+  region: Poly,
+  reducer: ee.Reducer.count(),
+  scale: 500,
+  }).setOptions({title: 'number of burned areas'});
+  
+// Display the chart in the console.
+print(chart);
+
+//plot total frequency (2012-2022) by department
+var chart2 = ui.Chart.image.byRegion(burnedAreaCount, CO_PA, ee.Reducer.count(), 500, 'NAME')
+print(chart2);
+
+
+//***********4 - calcualte annual frequency of burned areas 
+//reduce first by year
+//create annual burned area counts:
+var annualburnedarea = ee.ImageCollection.fromImages(
+  years.map(function (year) {
+    var annual = burnedArea
+        .filter(ee.Filter.calendarRange(year, year, 'year'))
+        .count();
+    return annual
+        .set('year', year)
+        .set('system:time_start', ee.Date.fromYMD(year, 1, 1));
+}));
+print(annualburnedarea);
+//working here trying to get year property with bands in stack?
+
+/////
+var BA_stackannual_image = annualburnedarea.toBands();
+print(BA_stackannual_image);
+var stats = BA_stackannual_image.reduceRegions({collection: CO_PA, reducer: ee.Reducer.count(), scale: 500});
+Export.table.toDrive({
+  collection: stats,
+  description:  'annualburncounts',
+  fileNamePrefix: 'annualburnedareacounts',
+  folder: 'CHIRPS_out',
+  fileFormat: 'CSV',
+  selectors:(["NAME", "0_BurnDate", "1_BurnDate", "2_BurnDate","3_BurnDate",
+    "4_BurnDate","5_BurnDate","6_BurnDate","7_BurnDate","8_BurnDate",
+    "9_BurnDate","10_BurnDate", "ha"]),
+  });
