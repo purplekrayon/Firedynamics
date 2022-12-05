@@ -1,20 +1,29 @@
+///////////////////////////////////////////////////////////////////////////////////////////
+IMPORTS
+var image = ee.Image("WHRC/biomass/tropical"),
+    CO_PA = ee.FeatureCollection("users/krayon/WDPA_SEfinal"),
+    hansen = ee.Image("UMD/hansen/global_forest_change_2021_v1_9"),
+    imageVisParam = {"opacity":1,"bands":["all"],"min":0.07114675355199251,"max":1.0622142767762168,"gamma":1},
+    studyarea = ee.FeatureCollection("users/krayon/SWdepdislv");
 ///////////////////////////////////////////////////////////////////////////////////////////////
 // Code Developed by Helaine Linden - Conservation International - 07/26/2017
 // Noel Gorelick from GEE provided suggestions: https://groups.google.com/forum/#!topic/google-earth-engine-developers/9j-eRy3Fmvg
 // Edited by Mariano Rodglich-Gonzalez
-// Edited by Karyn Tabor 12/04/2022
+// Edited by Karyn Tabor 12/05/2022
 // Calculating Area of forest Loss and Area of Total Forest Coverage per site
 //////////////////////////////////////////////////////////////////////////////////////////////
-//IMPORTS
-var image = ee.Image("WHRC/biomass/tropical"),
-    CO_PA = ee.FeatureCollection("users/krayon/WDPA_SEfinal"),
-    hansen = ee.Image("UMD/hansen/global_forest_change_2021_v1_9");
-/////
+///////////////////////////////////////////////////////////////////////////////////////////////// 
+// OUTPUTS:
+// CSV tables of annual forest cover, loss, biomass, and CO2 emissions for set of polygons
+// Rasters of specified AOI with forest and change statistics
+//////////////////////////////////////////////////////////////////////////////////////////////
 // USER INPUT
-// Country ISO 3 code
+// Country ISO 3 code for clipping display extent
 var ISO = 'COL';
+//AOI for ratser output
+var PAname = 'Sierra de la Macarena'
 // Minimum tree cover to be considered a forest
-var tree_cover = 10;
+var tree_cover = 30;
 var yr_str = 2011;
 var yr_end = 2021;
 //update the var list to correspond with the requested years
@@ -26,7 +35,7 @@ var FC_varlist = (['NAME',
               'Forest Cover ha 2021']);
               
 var COe_varlist = (['NAME',
-              'Carbon Emissions tCO2 2011', 'Carbon Emissions tCO2 2012','Carbon Emissions tCO2 2013',
+              'Carbon Emissions tCO2 2012','Carbon Emissions tCO2 2013',
               'Carbon Emissions tCO2 2014',
               'Carbon Emissions tCO2 2015','Carbon Emissions tCO2 2016','Carbon Emissions tCO2 2017',
               'Carbon Emissions tCO2 2018','Carbon Emissions tCO2 2019','Carbon Emissions tCO2 2020',
@@ -39,7 +48,6 @@ var biomass_varlist = (['NAME',
               'Total Biomass t 2018','Total Biomass t 2019','Total Biomass t 2020',
               'Total Biomass t 2021']);
 var FL_varlist = (['NAME',
-              'Forest Loss ha 2011',
               'Forest Loss ha 2012','Forest Loss ha 2013','Forest Loss ha 2014',
               'Forest Loss ha 2015','Forest Loss ha 2016','Forest Loss ha 2017',
               'Forest Loss ha 2018','Forest Loss ha 2019','Forest Loss ha 2020',
@@ -89,14 +97,14 @@ var fl_stack = ee.Image().select();
 for (var k = yr_str-2000+1; k <= yr_end-2000 ; k += 1) {
   var fl = fc_str.updateMask(hansen.select('lossyear').eq(k)).rename('Forest Loss ha '+(k+2000));
   var fl_stack = fl_stack.addBands(fl);}
-Map.addLayer(fl_stack.clip(Country), [], 'Forest loss stack');
+//Map.addLayer(fl_stack.clip(Country), [], 'Forest loss stack');
 
 // use the losses per year to compute forest extent per year
 var fc_stack = fc_str;
 for (var k = yr_str-2000+1; k <= yr_end-2000 ; k += 1) {
   var fc =  fc_stack.select('Forest Cover ha '+(k+2000-1)).updateMask(fl_stack.select('Forest Loss ha '+(k+2000)).unmask(0).neq(1)).rename('Forest Cover ha '+(k+2000));
   var fc_stack = fc_stack.addBands(fc);}
-Map.addLayer(fc_stack.clip(Country), [], 'Forest Cover stack');
+//Map.addLayer(fc_stack.clip(Country), [], 'Forest Cover stack');
 
 // use annual forest extent to estimate annual forest biomass in tons C/ha
 var cb_stack = ee.Image().select();
@@ -120,8 +128,8 @@ var areas =  output.multiply(ee.Image.pixelArea().divide(10000));
 //var stats = areas.reduceRegions({collection: sites, reducer: ee.Reducer.sum(), scale: 30});
 var stats = areas.reduceRegions({collection: sites, reducer: ee.Reducer.sum(), scale: 30});
 //Map.centerObject(sites);
-Map.addLayer(sites,false,'Protected Areas');
-print(stats)
+//Map.addLayer(sites,false,'Protected Areas');
+//print(stats)
 // Export these statistics to a CSV table
 //export Forest cover by year
 Export.table.toDrive({
@@ -159,3 +167,52 @@ Export.table.toDrive({
   fileFormat: 'CSV',
   selectors: COe_varlist
   });
+  
+ //exports stacked image of forest loss for AOI
+  var PA = ee.FeatureCollection(CO_PA).filter(ee.Filter.eq('NAME', PAname));
+//Exports image to Google Drive to selected PA
+/*Export.image.toDrive({
+  image: fl_stack,
+  description: 'Forest loss annual',
+  folder: 'gin_tool',
+  region: PA,
+  scale: 30,
+  maxPixels: 1e13});
+*/
+
+//Create thematic raster of forest cover and loss
+//select all deforestation pixels in fl_stack and unmask
+var total_loss = fl_stack.reduce(ee.Reducer.allNonZero()).unmask(0);
+//select forest 2011 and unmask, then add the total_loss pixels
+// 0 = no forest; 1=forest 2021; 2=forest loss from 2011-2021
+var flattenedimage = fc_stack.select('Forest Cover ha 2011').unmask(0).add(total_loss);
+Map.addLayer(flattenedimage.clip(Country), [], 'for and defor');
+//export image of forestcover ~2021 = 1 and forest loss from timeperiod=2
+//Exports image to Google Drive to selected PA
+Export.image.toDrive({
+  image: flattenedimage,
+  description: 'forestandloss',
+  folder: 'gin_tool',
+  region: PA,
+  scale: 30,
+  maxPixels: 1e13});
+  
+Export.image.toDrive({
+  image: flattenedimage,
+  description: 'forestandloss_SA',
+  folder: 'gin_tool',
+  region: studyarea,
+  scale: 30,
+  maxPixels: 1e13});
+//Exports image to Google Drive to selected PA
+/*
+Export.image.toDrive({
+  image: forest2021,
+  description: 'forest2021',
+  folder: 'gin_tool',
+  region: PA,
+  scale: 30,
+  maxPixels: 1e13});
+
+*/
+
